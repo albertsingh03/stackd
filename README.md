@@ -1,0 +1,48 @@
+# Stackd
+
+A focused, mobile-first workout log: enter weight and reps, check off a set, and see what you lifted last time.
+
+## Why this exists
+
+Recording a workout should not interrupt it. Stackd starts with the smallest useful training loop: log a set, save the session, and make the next session easier to compare. Nutrition, health integrations, and AI remain separate future phases.
+
+The first version simplifies an existing Figma/Android concept into three views: **Workout**, **History**, and **Progress**. It preserves the reference's dark surfaces, lime accent, and Set / Previous / KG / Reps layout. This web implementation is original; the supplied APK, Figma document, embedded credentials, and personal data are not included in source control.
+
+## Working features
+
+- Start a workout or repeat a completed session.
+- Choose from a concise exercise list or add a custom exercise.
+- Log kg and reps, add/remove sets, and check off completed sets.
+- Prefill previous weights/reps without marking them completed.
+- Autosave to a server-backed database; resume an unfinished session.
+- Review history and per-exercise heaviest-set trends with exact rep counts.
+- Export the log as JSON, including pending edits, and confirm before deleting sessions.
+- Validate writes and reject stale revisions; replay an unacknowledged request before sending newer edits.
+
+## Current boundaries
+
+This is a **private, single-owner MVP**, not a public multi-user service. Its data API relies on the hosting platform's owner-only access gate. Do not make this deployment public or shared. A multi-user release must first add authentication and owner-scoped queries.
+
+An internet connection is required to save and load workouts. Session storage holds a best-effort recovery copy of unsaved edits, not the authoritative database or an offline mode. Wait for “All changes saved” before leaving. After a conflicting edit, export the draft before reloading.
+
+Weights use kilograms. Keep a consistent convention per exercise; per-dumbbell weight is suggested for dumbbells and 0 kg represents bodyweight-only loading. Volume is logged weight × reps, not physiological workload. Only checked sets from finished sessions enter progress. Finished sessions can be viewed, repeated, exported, or deleted; direct historical correction and JSON import are not yet implemented.
+
+## Engineering
+
+React 19 + TypeScript, Vinext, Cloudflare Workers, Cloudflare D1 / SQLite, Drizzle migrations, Zod validation, and Radix/Base UI accessibility primitives. Session revisions provide optimistic concurrency control; a unique active-session constraint prevents two live sessions. Prepared SQL statements and same-origin checks protect write endpoints. Reads are cursor-paginated.
+
+## Run and verify
+
+Requires Node.js 22.13+ and npm. See [runtime setup](docs/runtime.md) for portable and managed environment details. `npm ci`, `npm run dev`, and `npm run build` are the normal commands in a portable checkout. Generate schema changes using `npm run db:generate`; production hosting applies tracked migrations. Do not create production tables at runtime.
+
+Domain checks: `node --experimental-strip-types --test tests/workouts.test.mts`.
+
+Type checks: `npx tsc --noEmit`.
+
+## Portfolio documentation
+
+- [Architecture and data safety](docs/architecture.md)
+- [Phased product roadmap](docs/roadmap.md)
+- [Reference analysis](docs/reference-analysis.md)
+
+Keep health records, uploaded design archives, APK binaries, secrets, local databases, and exports out of the public repository. Publishing source does not imply publishing the private training log. A license for public reuse has not yet been selected.
