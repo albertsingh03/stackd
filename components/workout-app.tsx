@@ -10,14 +10,15 @@ import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
-import { completedSets, exerciseNames, previousExercise, progressPoints, volume, workoutSchema, type Exercise, type LiftSet, type Workout } from "@/lib/workouts";
+import { completedSets, exerciseNames, previousExercise, progressPoints, volume, workoutSchema, sessionClock, resumeSession, stopSessionTimer, workoutPayload as transport, sameWorkoutPayload as samePayload, type Exercise, type LiftSet, type Workout } from "@/lib/workouts";
+
+import { loadWorkoutPages, MAX_SAVE_BATCH } from "@/lib/workout-requests";
 
 const number = (n: number) => n.toLocaleString("en-AU", { maximumFractionDigits: 1 });
 const date = (s: string) => new Date(s).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
 const newSet = (from?: LiftSet): LiftSet => ({ id: crypto.randomUUID(), weight: from?.weight ?? "", reps: from?.reps ?? "", done: false });
 const DRAFT_KEY = "stackd.unsaved-workout.v1";
-const transport = (w: Workout): Workout => ({ ...w, name: w.name.trim() || "Workout", exercises: w.exercises.map(e => ({ ...e, sets: e.sets.map(s => ({ ...s, weight: s.weight === "." ? "" : s.weight })) })) });
-const samePayload = (a: Workout, b: Workout) => JSON.stringify({ ...transport(a), revision: 0 }) === JSON.stringify({ ...transport(b), revision: 0 });
+
 
 export default function WorkoutApp() {
   const [workouts, setWorkouts] = useState<Workout[]>([]);
@@ -42,19 +43,17 @@ export default function WorkoutApp() {
   const revisions = useRef<Record<string, number>>({});
   const inFlight = useRef<Promise<boolean> | null>(null);
   const blocked = useRef(false);
+  const autoSavePaused = useRef(false);
   const dirty = useRef(false);
+  const actionLock = useRef(false);
+  const activeId = useRef<string | null>(null);
+  const clock = draft ? sessionClock(draft, now) : null;
+  const timerRunning = clock?.running ?? false;
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      let cursor: string | null = "";
-      const all: Workout[] = [];
-      do {
-        const response: Response = await fetch(`/api/workouts${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { cache: "no-store" });
-        const result = await response.json() as { workouts: Workout[]; nextCursor: string | null; error?: string };
-        if (!response.ok) throw new Error(result.error);
-        all.push(...result.workouts); cursor = result.nextCursor;
-      } while (cursor);
+      const all = await loadWorkoutPages();
       all.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
       setWorkouts(all);
       all.forEach(w => { revisions.current[w.id] = w.revision; });
@@ -77,13 +76,27 @@ export default function WorkoutApp() {
           setError("A local recovery copy could not be opened. Export your log to preserve that copy before continuing.");
         }
       } catch { try { unparsedRecovery.current = sessionStorage.getItem(DRAFT_KEY); } catch { /* optional storage */ } }
-      setDraft(active); setLoaded(true);
+      activeId.current = active?.id ?? null;
+      setNow(Date.now()); setDraft(active); setLoaded(true);
     } catch (e) { setError(e instanceof Error ? e.message : "Could not load workouts."); }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    if (!timerRunning) return;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const refresh = () => {
+      clearInterval(timer);
+      if (!document.hidden) {
+        setNow(Date.now());
+        timer = setInterval(() => setNow(Date.now()), 15000);
+      }
+    };
+    refresh();
+    document.addEventListener("visibilitychange", refresh);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, [timerRunning]);
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => { if (dirty.current) { e.preventDefault(); e.returnValue = ""; } };
     window.addEventListener("beforeunload", warn);
@@ -94,11 +107,20 @@ export default function WorkoutApp() {
     try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: { ...transport(w), revision: revisions.current[w.id] ?? w.revision }, outstanding: outstanding.current })); } catch { /* Storage unavailable: keep in memory and warn on leave. */ }
   }
 
-  const flush = useCallback(async (): Promise<boolean> => {
+  const flush = useCallback(async (automatic = false): Promise<boolean> => {
+    if (automatic && autoSavePaused.current) return false;
     if (inFlight.current) return inFlight.current;
     if (blocked.current) return false;
+    autoSavePaused.current = false;
     const task = (async () => {
+      let requests = 0;
       while (pending.current || outstanding.current) {
+        if (++requests > MAX_SAVE_BATCH) {
+          autoSavePaused.current = true;
+          setSaveStatus("unsaved");
+          setError("Saving paused after several updates. Your edits are kept. Tap Retry to continue.");
+          return false;
+        }
         const current: Workout = outstanding.current ?? transport({ ...pending.current!, revision: revisions.current[pending.current!.id] ?? pending.current!.revision });
         outstanding.current = current;
         remember(pending.current ?? current);
@@ -112,7 +134,11 @@ export default function WorkoutApp() {
             remember(pending.current ?? current);
             throw new Error(result.error);
           }
-          const saved: Workout = result.workout;
+          const saved = workoutSchema.parse(result.workout);
+          if (!samePayload(current, saved)) {
+            blocked.current = true;
+            throw new Error("The save response did not match your workout. Your local edits are kept. Export them before reloading.");
+          }
           outstanding.current = null;
           revisions.current[saved.id] = saved.revision;
           setWorkouts(prev => [saved, ...prev.filter(w => w.id !== saved.id)].sort((a, b) => b.startedAt.localeCompare(a.startedAt)));
@@ -125,6 +151,7 @@ export default function WorkoutApp() {
           }
           setError("");
         } catch (e) {
+          autoSavePaused.current = true;
           setSaveStatus("unsaved"); setError(e instanceof Error ? e.message : "Not saved yet. Check your connection and retry.");
           return false;
         }
@@ -137,11 +164,21 @@ export default function WorkoutApp() {
 
   useEffect(() => {
     if (!pending.current) return;
-    const timer = setTimeout(() => { void flush(); }, 500);
+    const timer = setTimeout(() => { void flush(true); }, 500);
     return () => clearTimeout(timer);
   }, [draft, flush]);
 
-  function change(w: Workout) {
+  function change(w: Workout, activity = true) {
+    if (activity && actionLock.current) return;
+    const time = Date.now();
+    if (activity && draft && sessionClock(draft, time).needsReview) {
+      setNow(time); toast("Resume or finish this paused session first."); return;
+    }
+    if (activity && !w.timer && !w.completedAt) w = resumeSession(w, time);
+    autoSavePaused.current = false;
+    if (activity && w.timer?.runningSince) w = { ...w, timer: { ...w.timer, lastActivityAt: new Date(time).toISOString() } };
+    activeId.current = w.id;
+    setNow(time);
     pending.current = w; dirty.current = true;
     remember(w); setDraft(w); setSaveStatus("unsaved");
   }
@@ -154,8 +191,8 @@ export default function WorkoutApp() {
   const thisWeek = history.filter(w => new Date(w.startedAt).getTime() >= now - 7 * 86400000);
 
   function start(from?: Workout) {
-    if (draft) { setTab("workout"); toast("Finish or discard your current session first."); return; }
-    const w: Workout = { id: crypto.randomUUID(), name: from?.name || "Workout", startedAt: new Date().toISOString(), completedAt: null, revision: 0,
+    if (activeId.current || actionLock.current) { setTab("workout"); toast("Finish or discard your current session first."); return; }
+    const w: Workout = { id: crypto.randomUUID(), name: from?.name || "Workout", startedAt: new Date().toISOString(), completedAt: null, revision: 0, timer: { elapsedMs: 0, runningSince: null, lastActivityAt: null },
       exercises: from?.exercises.filter(e => e.sets.some(s => s.done)).map(e => ({ ...e, id: crypto.randomUUID(), sets: e.sets.filter(s => s.done).map(s => newSet(s)) })) ?? [] };
     revisions.current[w.id] = 0; change(w); setTab("workout"); setDetail(null);
     if (!from) setPicker(true);
@@ -176,30 +213,32 @@ export default function WorkoutApp() {
   function updateSet(e: Exercise, s: LiftSet, update: Partial<LiftSet>) {
     const next = { ...s, ...update };
     if (next.done && (!next.weight.trim() || !Number.isFinite(Number(next.weight)) || Number(next.weight) < 0 || Number(next.weight) > 2000 || !/^\d+$/.test(next.reps) || Number(next.reps) < 1 || Number(next.reps) > 1000)) { toast.error("Enter a valid weight and reps first. Use 0 kg for bodyweight."); return; }
-    updateExercise(e.id, x => ({ ...x, sets: x.sets.map(v => v.id === s.id ? next : v) }));
+    if (!draft) return;
+    const w = draft.timer && !draft.timer.runningSince ? resumeSession(draft, Date.now()) : draft;
+    change({ ...w, exercises: w.exercises.map(x => x.id === e.id ? { ...x, sets: x.sets.map(v => v.id === s.id ? next : v) } : x) });
   }
   async function finish() {
-    if (!draft || !completedSets(draft).length) return;
-    setBusy(true);
-    const finished = { ...draft, completedAt: draft.completedAt || new Date().toISOString() };
-    change(finished);
+    if (!draft || !completedSets(draft).length || actionLock.current) return;
+    actionLock.current = true; setBusy(true);
+    const finished = { ...stopSessionTimer(draft, Date.now()), completedAt: draft.completedAt || new Date().toISOString() };
+    change(finished, false);
     const saved = await flush();
-    if (saved) { setDraft(null); setFinishOpen(false); setTab("history"); toast.success("Workout finished. Every set counts."); }
-    setBusy(false);
+    if (saved) { activeId.current = null; setDraft(null); setFinishOpen(false); setTab("history"); toast.success("Workout finished. Every set counts."); }
+    actionLock.current = false; setBusy(false);
   }
   async function removeWorkout() {
-    if (!deleteTarget) return;
-    setBusy(true);
+    if (!deleteTarget || actionLock.current) return;
+    actionLock.current = true; setBusy(true);
     try {
       if (draft?.id === deleteTarget.id && !await flush()) throw new Error("Save or export your edits before discarding this workout.");
-      const response = await fetch(`/api/workouts?id=${deleteTarget.id}&revision=${revisions.current[deleteTarget.id] ?? deleteTarget.revision}`, { method: "DELETE" });
+      const response = await fetch(`/api/workouts?id=${deleteTarget.id}&revision=${revisions.current[deleteTarget.id] ?? deleteTarget.revision}`, { method: "DELETE", signal: AbortSignal.timeout(15000) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error);
       setWorkouts(ws => ws.filter(w => w.id !== deleteTarget.id));
-      if (draft?.id === deleteTarget.id) setDraft(null);
+      if (draft?.id === deleteTarget.id) { activeId.current = null; setDraft(null); }
       setDeleteTarget(null); setDetail(null); toast("Workout deleted.");
     } catch (e) { toast.error(e instanceof Error ? e.message : "Could not delete workout."); }
-    setBusy(false);
+    actionLock.current = false; setBusy(false);
   }
   function exportLog() {
     const blob = new Blob([JSON.stringify({ app: "Stackd", schemaVersion: 1, exportedAt: new Date().toISOString(), weightUnit: "kg", workouts, unsavedDraft: pending.current, unacknowledgedRequest: outstanding.current, unparsedRecovery: unparsedRecovery.current }, null, 2)], { type: "application/json" });
@@ -221,7 +260,10 @@ export default function WorkoutApp() {
         <TabsContent value="workout">
           <div className="workout-grid"><section className="session-main">
             {draft ? <>
-              <div className="session-header"><div><p className="eyebrow">{draft.completedAt ? "FINISHING SESSION" : "CURRENT SESSION"}</p><input className="session-title" aria-label="Workout name" value={draft.name} maxLength={80} onChange={e => change({ ...draft, name: e.target.value })} onBlur={() => { if (!draft.name.trim()) change({ ...draft, name: "Workout" }); }} /><p className="session-meta"><Clock3 size={14} />{Math.max(0, Math.floor(((draft.completedAt ? new Date(draft.completedAt).getTime() : now) - new Date(draft.startedAt).getTime()) / 60000))} min <span>·</span>{date(draft.startedAt)}</p></div><button className="primary-button" onClick={() => setFinishOpen(true)} disabled={!currentSets || busy}>Finish <Check size={17} /></button></div>
+              <div className="session-header"><div><p className="eyebrow">{draft.completedAt ? "FINISHING SESSION" : "CURRENT SESSION"}</p><input className="session-title" aria-label="Workout name" disabled={busy || !!clock?.needsReview} value={draft.name} maxLength={80} onChange={e => change({ ...draft, name: e.target.value })} onBlur={() => { if (!draft.name.trim()) change({ ...draft, name: "Workout" }); }} /><p className="session-meta"><Clock3 size={14} />{clock?.elapsedMs === null ? "Duration unavailable" : `${Math.floor((clock?.elapsedMs ?? 0) / 60000)} min`}{clock?.needsReview ? " · Paused" : ""} <span>·</span>{date(draft.startedAt)}</p></div><button className="primary-button" onClick={() => setFinishOpen(true)} disabled={!currentSets || busy}>Finish <Check size={17} /></button></div>
+              {clock?.needsReview && <div className="panel session-review" role="status"><h2>This session was left open</h2><p>The timer has paused. Your sets are safe. Resume to keep logging, finish your completed sets, or discard the session.</p>{clock.elapsedMs === null && <p>This older session has no activity record, so its duration cannot be recovered reliably.</p>}<button className="secondary-button" disabled={busy} onClick={() => change(resumeSession(draft, Date.now()), false)}>Resume session</button></div>}
+              {!draft.timer?.runningSince && !clock?.needsReview && !draft.completedAt && draft.timer?.elapsedMs === 0 && <p className="muted">The timer starts when you first enter a weight or reps.</p>}
+              <fieldset className="session-fields" disabled={busy || !!clock?.needsReview || !!draft.completedAt}>
               {!draft.exercises.length && <div className="panel empty compact"><Dumbbell size={34} /><h2>First exercise. Fresh start.</h2><p>Add a lift to start logging your sets.</p><button className="primary-button" onClick={() => setPicker(true)}><Plus size={17} /> Add exercise</button></div>}
               {draft.exercises.map((e, index) => { const prior = previousExercise(history.filter(w => w.id !== draft.id), e.name)?.sets.filter(s => s.done); return <article className="exercise-card" key={e.id}><div className="exercise-header"><span className="exercise-index">{String(index + 1).padStart(2, "0")}</span><div><h2>{e.name}</h2><p>{prior ? "Last session shown below" : "No previous sets yet"}</p></div><button className="icon-button" aria-label={`Remove ${e.name}`} onClick={() => { if (e.sets.some(s => s.done)) { toast("Uncheck completed sets before removing this exercise."); return; } change({ ...draft, exercises: draft.exercises.filter(x => x.id !== e.id) }); }}><X size={17} /></button></div>
                 <div className="set-grid set-labels" aria-hidden="true"><span>SET</span><span>PREVIOUS</span><span>KG</span><span>REPS</span><Check size={14} /><span /></div>
@@ -229,7 +271,8 @@ export default function WorkoutApp() {
                 <button className="add-set" disabled={e.sets.length >= 30} onClick={() => updateExercise(e.id, x => ({ ...x, sets: [...x.sets, newSet(x.sets.at(-1))] }))}><Plus size={15} /> Add set</button>
               </article>; })}
               {!!draft.exercises.length && <button className="add-exercise" onClick={() => setPicker(true)}><Plus size={19} />Add exercise</button>}
-              <div className="session-bottom"><span className={`save-label ${saveStatus !== "saved" ? "pending-save" : ""}`} aria-live="polite">{saveStatus === "saving" ? <LoaderCircle size={15} className="spin" /> : <CloudCheck size={15} />}{saveStatus === "saved" ? "All changes saved" : saveStatus === "saving" ? "Saving changes…" : "Changes not saved yet"}</span><button className="text-button muted" onClick={() => setDeleteTarget(draft)}>Discard session</button></div>
+              </fieldset>
+              <div className="session-bottom"><span className={`save-label ${saveStatus !== "saved" ? "pending-save" : ""}`} aria-live="polite">{saveStatus === "saving" ? <LoaderCircle size={15} className="spin" /> : <CloudCheck size={15} />}{saveStatus === "saved" ? "All changes saved" : saveStatus === "saving" ? "Saving changes…" : "Changes not saved yet"}</span><button className="text-button muted" disabled={busy} onClick={() => setDeleteTarget(draft)}>Discard session</button></div>
             </> : <>
               <section className="start-panel"><div className="start-kicker"><span className="small-icon"><Dumbbell size={19} /></span> WORKOUT LOG</div><h2>{history.length ? "Ready for your next set?" : "Your first set starts here."}</h2><p>Log weight. Add reps. Tick it off.<br />Next time, your last lift is right beside you.</p><button className="primary-button start-button" onClick={() => start()}><Plus size={19} /> Start a workout <ArrowUpRight size={19} /></button><div className="start-footnote"><CloudCheck size={15} /> Your workouts save automatically.</div></section>
               <div className="section-heading"><h2>Recent workouts</h2>{!!history.length && <button className="text-button" onClick={() => setTab("history")}>View all <ChevronRight size={15} /></button>}</div>

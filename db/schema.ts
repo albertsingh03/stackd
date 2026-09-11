@@ -4,4 +4,5 @@ export const workouts = sqliteTable("workouts", {
   startedAt: text("started_at").notNull(), completedAt: text("completed_at"),
   activeSlot: integer("active_slot"), revision: integer("revision").notNull(),
   exercises: text("exercises").notNull(),
+  timer: text("timer"),
 }, (t) => [uniqueIndex("workouts_one_active").on(t.activeSlot), index("workouts_started_at").on(t.startedAt, t.id)]);
