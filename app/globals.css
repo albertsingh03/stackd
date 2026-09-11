@@ -135,3 +135,9 @@ h1 span { color:var(--primary); }
   .stackd-dialog { padding:24px!important; }.session-bottom { gap:8px; }.session-bottom .text-button { font-size:12px; }.app-footer { margin-top:30px; }.empty { min-height:310px; }.empty h2 { font-size:23px; }
 }
 @media (prefers-reduced-motion:reduce) { *,*:before,*:after { animation:none!important; transition:none!important; } }
+
+.session-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.session-fields:disabled { opacity: .55; }
+.session-review { padding: 24px; margin-bottom: 24px; border-color: var(--primary, #c7f11f); }
+.session-review h2 { font-size: 20px; margin-bottom: 10px; }
+.session-review p { margin-bottom: 16px; }

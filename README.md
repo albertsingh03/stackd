@@ -15,6 +15,7 @@ The first version simplifies an existing Figma/Android concept into three views:
 - Log kg and reps, add/remove sets, and check off completed sets.
 - Prefill previous weights/reps without marking them completed.
 - Autosave to a server-backed database; resume an unfinished session.
+- Start timing on the first set entry; review sessions after 90 minutes without logging or six hours of continuous timing.
 - Review history and per-exercise heaviest-set trends with exact rep counts.
 - Export the log as JSON, including pending edits, and confirm before deleting sessions.
 - Validate writes and reject stale revisions; replay an unacknowledged request before sending newer edits.
@@ -27,6 +28,12 @@ An internet connection is required to save and load workouts. Session storage ho
 
 Weights use kilograms. Keep a consistent convention per exercise; per-dumbbell weight is suggested for dumbbells and 0 kg represents bodyweight-only loading. Volume is logged weight × reps, not physiological workload. Only checked sets from finished sessions enter progress. Finished sessions can be viewed, repeated, exported, or deleted; direct historical correction and JSON import are not yet implemented.
 
+## Session safeguards
+
+An empty session stays at zero. The first weight/reps entry starts timing (checking a prefilled set also starts it). After 90 minutes without a workout edit, timing freezes at the last recorded activity. Six hours of continuous timing also requires review. Resume excludes the idle gap; Finish stops timing and saves checked sets; Discard requires confirmation. Old sessions without activity timestamps retain their sets but show an unknown duration when stale. Expiry is derived from stored timestamps on return, so it does not depend on a background job staying alive.
+
+Timer refreshes stop while the page is hidden and when timing has stopped. Loading detects repeated cursors and has a 200-page ceiling. Saving sends at most eight requests in one batch, stops automatic retries on errors or the batch limit, and retains pending edits for manual retry/export. Requests time out after 15 seconds. Canonical payload comparison avoids repeated saves caused only by field order or trimmed names. Finish, discard, and session creation are protected against duplicate clicks.
+
 ## Engineering
 
 React 19 + TypeScript, Vinext, Cloudflare Workers, Cloudflare D1 / SQLite, Drizzle migrations, Zod validation, and Radix/Base UI accessibility primitives. Session revisions provide optimistic concurrency control; a unique active-session constraint prevents two live sessions. Prepared SQL statements and same-origin checks protect write endpoints. Reads are cursor-paginated.
@@ -35,7 +42,7 @@ React 19 + TypeScript, Vinext, Cloudflare Workers, Cloudflare D1 / SQLite, Drizz
 
 Requires Node.js 22.13+ and npm. See [runtime setup](docs/runtime.md) for portable and managed environment details. `npm ci`, `npm run dev`, and `npm run build` are the normal commands in a portable checkout. Generate schema changes using `npm run db:generate`; production hosting applies tracked migrations. Do not create production tables at runtime.
 
-Domain checks: `node --experimental-strip-types --test tests/workouts.test.mts`.
+Domain checks: `node --experimental-strip-types --test tests/*.test.mts`.
 
 Type checks: `npx tsc --noEmit`.
 
