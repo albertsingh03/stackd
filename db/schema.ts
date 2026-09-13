@@ -6,3 +6,8 @@ export const workouts = sqliteTable("workouts", {
   exercises: text("exercises").notNull(),
   timer: text("timer"),
 }, (t) => [uniqueIndex("workouts_one_active").on(t.activeSlot), index("workouts_started_at").on(t.startedAt, t.id)]);
+
+export const exerciseCatalog = sqliteTable("exercise_catalog", {
+  id: text("id").primaryKey(), name: text("name").notNull(),
+  normalizedKey: text("normalized_key").notNull(),
+}, t => [uniqueIndex("exercise_catalog_name_unique").on(t.normalizedKey)]);

@@ -1,4 +1,5 @@
 import { database } from "@/db/raw";
+import { exerciseKey } from "@/lib/exercise-catalog";
 import { workoutSchema } from "@/lib/workouts";
 // SINGLE-OWNER MVP behind Sites' private access gate. Never make this deployment
 // public/shared without app authentication and per-user checks on every query.
@@ -32,6 +33,14 @@ export async function PUT(request: Request) {
     if (existing && existing.revision === w.revision + 1 && existing.name === w.name && existing.started_at === w.startedAt && existing.completed_at === w.completedAt && existing.exercises === exercises && existing.timer === timer) return json({ workout: decode(existing) });
     if ((!existing && w.revision !== 0) || (existing && (existing.revision !== w.revision || existing.started_at !== w.startedAt))) return json({ error: "This workout changed in another tab or device. Your local edits are kept. Export them before reloading." }, 409);
     if (existing?.completed_at && !w.completedAt) return json({ error: "A finished workout cannot be reopened. Start a new session." }, 409);
+    // Old records keep their historical labels. New names must use the master catalog.
+    const oldExercises: { id: string; name: string }[] = existing ? JSON.parse(existing.exercises) : [];
+    for (const exercise of w.exercises) {
+      if (oldExercises.some(e => e.id === exercise.id && e.name === exercise.name)) continue;
+      const canonical = await db.prepare("SELECT name FROM exercise_catalog WHERE normalized_key = ?").bind(exerciseKey(exercise.name)).first<{ name: string }>();
+      // Repeat may preserve a legacy label; it must refer to an existing normalized master.
+      if (!canonical) return json({ error: "Choose an exercise from the database, or create it through exercise search first." }, 400);
+    }
     let saved: Row | null;
     if (!existing) {
       saved = await db.prepare("INSERT INTO workouts (id, name, started_at, completed_at, active_slot, revision, exercises, timer) VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT(id) DO NOTHING RETURNING *").bind(w.id, w.name, w.startedAt, w.completedAt, w.completedAt ? null : 1, exercises, timer).first<Row>();

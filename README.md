@@ -1,6 +1,6 @@
 # Stackd
 
-A focused, mobile-first workout log: enter weight and reps, check off a set, and see what you lifted last time.
+A focused, mobile-first workout log: enter weight and reps to log a set automatically, and see what you lifted last time.
 
 ## Why this exists
 
@@ -11,10 +11,10 @@ The first version simplifies an existing Figma/Android concept into three views:
 ## Working features
 
 - Start a workout or repeat a completed session.
-- Choose from a concise exercise list or add a custom exercise.
-- Log kg and reps, add/remove sets, and check off completed sets.
+- Search a durable exercise master database, review fuzzy suggestions, and create a distinct exercise in the same picker.
+- Valid kg and reps automatically log a set; empty/partial rows do not count. Entries remain editable; removing entered data requires confirmation.
 - Additional sets start with blank kg/reps; tapping a search result adds the exercise directly. Exercise search uses an inline command list inside the dialog, without a nested popup or portal. Opening the picker leaves the keyboard closed until search is tapped.
-- Prefill previous weights/reps without marking them completed.
+- Show previous weights/reps as reference only. Every new/repeated row starts blank.
 - Autosave to a server-backed database; resume an unfinished session.
 - Start timing on the first set entry; review sessions after 90 minutes without logging or six hours of continuous timing.
 - Review history and per-exercise heaviest-set trends with exact rep counts.
@@ -27,11 +27,11 @@ This is a **private, single-owner MVP**, not a public multi-user service. Its da
 
 An internet connection is required to save and load workouts. Session storage holds a best-effort recovery copy of unsaved edits, not the authoritative database or an offline mode. Wait for “All changes saved” before leaving. After a conflicting edit, export the draft before reloading.
 
-Weights use kilograms. Keep a consistent convention per exercise; per-dumbbell weight is suggested for dumbbells and 0 kg represents bodyweight-only loading. Volume is logged weight × reps, not physiological workload. Only checked sets from finished sessions enter progress. Finished sessions can be viewed, repeated, exported, or deleted; direct historical correction and JSON import are not yet implemented.
+Weights use kilograms. Keep a consistent convention per exercise; per-dumbbell weight is suggested for dumbbells and 0 kg represents bodyweight-only loading. Volume is logged weight × reps, not physiological workload. Only logged sets from finished sessions enter progress. Older completed history retains its original completion flags. Finished sessions can be viewed, repeated, exported, or deleted; direct historical correction and JSON import are not yet implemented.
 
 ## Session safeguards
 
-An empty session stays at zero. The first weight/reps entry starts timing (checking a prefilled set also starts it). After 90 minutes without a workout edit, timing freezes at the last recorded activity. Six hours of continuous timing also requires review. Resume excludes the idle gap; Finish stops timing and saves checked sets; Discard requires confirmation. Old sessions without activity timestamps retain their sets but show an unknown duration when stale. Expiry is derived from stored timestamps on return, so it does not depend on a background job staying alive.
+An empty session stays at zero. The first weight/reps entry starts timing. After 90 minutes without a workout edit, timing freezes at the last recorded activity. Six hours of continuous timing also requires review. Resume excludes the idle gap; Finish stops timing and saves logged sets; Discard requires confirmation. Old sessions without activity timestamps retain their sets but show an unknown duration when stale. Expiry is derived from stored timestamps on return, so it does not depend on a background job staying alive.
 
 Timer refreshes stop while the page is hidden and when timing has stopped. Loading detects repeated cursors and has a 200-page ceiling. Saving sends at most eight requests in one batch, stops automatic retries on errors or the batch limit, and retains pending edits for manual retry/export. Requests time out after 15 seconds. Canonical payload comparison avoids repeated saves caused only by field order or trimmed names. Finish, discard, and session creation are protected against duplicate clicks.
 
@@ -54,3 +54,7 @@ Type checks: `npx tsc --noEmit`.
 - [Reference analysis](docs/reference-analysis.md)
 
 Keep health records, uploaded design archives, APK binaries, secrets, local databases, and exports out of the public repository. Publishing source does not imply publishing the private training log. A license for public reuse has not yet been selected.
+
+## Exercise master integrity
+
+The exercise catalog has stable IDs and a unique normalized name key. An explicit initialization request imports built-in and existing workout names without rewriting history; schema migrations only create the table/index. Creation uses same-origin checks, bounded requests, prepared SQL and a uniqueness constraint. Exact spelling conventions (case, punctuation, token order and common aliases) reuse a canonical row even with concurrent requests. Fuzzy matches prompt review and require an explicit different-exercise confirmation; no fuzzy auto-merging occurs. Exercise selection and new creation share the working inline search, with no nested dropdown. Catalog requests time out and require manual retry on failure. New workout exercise names must resolve to the catalog. This remains an owner-private catalog, not a public crowdsourced master or administrative merge tool.

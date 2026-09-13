@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { newWorkoutSet } from "../lib/workouts.ts";
+import { newWorkoutSet, isLoggedSet, completedSets, logEnteredSets, workoutSchema } from "../lib/workouts.ts";
 
 test("new additional sets start blank and unchecked, with unique identities", () => {
   const previous = { ...newWorkoutSet(), weight: "10", reps: "5", done: true };
@@ -12,11 +12,25 @@ test("new additional sets start blank and unchecked, with unique identities", ()
   assert.equal(sets[0].weight, "10");
 });
 
-test("intentional repeat-workout prefills remain unchecked", () => {
-  const previous = { ...newWorkoutSet(), weight: "50", reps: "8", done: true };
-  const repeated = newWorkoutSet(previous);
-  assert.equal(repeated.weight, "50");
-  assert.equal(repeated.reps, "8");
+test("repeated sets start blank too", () => {
+  const repeated = newWorkoutSet();
+  assert.equal(repeated.weight, "");
+  assert.equal(repeated.reps, "");
   assert.equal(repeated.done, false);
-  assert.notEqual(repeated.id, previous.id);
+});
+
+test("only valid manually entered weights and reps count", () => {
+  for (const [weight, reps, expected] of [["", "8", false], ["5", "", false], [".", "8", false], ["0", "8", true], [".5", "8", true], ["5", "0", false], ["2001", "8", false], ["5", "1001", false], ["5", "1.5", false], ["10", "7", true]] as const) {
+    assert.equal(isLoggedSet({ ...newWorkoutSet(), weight, reps }), expected, `${weight} x ${reps}`);
+  }
+});
+test("active valid entries count without ticks; finishing logs them without changing old history", () => {
+  const w = { id: crypto.randomUUID(), name: "Workout", startedAt: "2026-09-13T00:00:00Z", completedAt: null, revision: 0, exercises: [{ id: crypto.randomUUID(), name: "Squat", sets: [{ ...newWorkoutSet(), weight: "10", reps: "5" }, newWorkoutSet()] }] };
+  assert.equal(completedSets(w).length, 1);
+  const finished = { ...logEnteredSets(w), completedAt: "2026-09-13T01:00:00Z" };
+  assert.equal(workoutSchema.safeParse(finished).success, true);
+  assert.equal(completedSets(finished).length, 1);
+  assert.equal(completedSets({ ...w, completedAt: finished.completedAt }).length, 0);
+  const cleared = { ...w, exercises: [{ ...w.exercises[0], sets: [{ ...w.exercises[0].sets[0], reps: "" }] }] };
+  assert.equal(completedSets(cleared).length, 0);
 });

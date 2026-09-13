@@ -7,10 +7,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import { Command, CommandInput, CommandList, CommandItem, CommandEmpty } from "@/components/ui/command";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
+import { exerciseKey, exerciseMatches, type CatalogExercise } from "@/lib/exercise-catalog";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
-import { completedSets, exerciseNames, previousExercise, progressPoints, volume, workoutSchema, sessionClock, resumeSession, stopSessionTimer, workoutPayload as transport, sameWorkoutPayload as samePayload, newWorkoutSet as newSet, type Exercise, type LiftSet, type Workout } from "@/lib/workouts";
+import { completedSets, isLoggedSet, logEnteredSets, previousExercise, progressPoints, volume, workoutSchema, sessionClock, resumeSession, stopSessionTimer, workoutPayload as transport, sameWorkoutPayload as samePayload, newWorkoutSet as newSet, type Exercise, type LiftSet, type Workout } from "@/lib/workouts";
 
 import { loadWorkoutPages, MAX_SAVE_BATCH } from "@/lib/workout-requests";
 
@@ -30,6 +30,26 @@ export default function WorkoutApp() {
   const [picker, setPicker] = useState(false);
   const exerciseDialog = useRef<HTMLDivElement | null>(null);
   const [customName, setCustomName] = useState("");
+  const [catalog, setCatalog] = useState<CatalogExercise[]>([]);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const catalogLock = useRef(false);
+  const [confirmDifferent, setConfirmDifferent] = useState(false);
+  const [removeEntry, setRemoveEntry] = useState<{ exerciseId: string; setId?: string } | null>(null);
+  const matches = exerciseMatches(customName, catalog);
+  const exactMatch = matches.some(m => m.exact);
+  const similarMatches = matches.filter(m => m.similar && !m.exact);
+  const loadCatalog = useCallback(async () => {
+    setCatalogError("");
+    try {
+      const response = await fetch("/api/exercises", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "initialize" }), signal: AbortSignal.timeout(15000) });
+      const result = await response.json() as { exercises: CatalogExercise[]; exercise: CatalogExercise; suggestions?: CatalogExercise[]; error?: string; reused?: boolean };
+      if (!response.ok) throw new Error(result.error);
+      setCatalog(result.exercises); setCatalogReady(true);
+    } catch (e) { setCatalogError(e instanceof Error ? e.message : "Exercise database unavailable."); }
+  }, []);
+  useEffect(() => { void loadCatalog(); }, [loadCatalog]);
   const [detail, setDetail] = useState<Workout | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Workout | null>(null);
   const [finishOpen, setFinishOpen] = useState(false);
@@ -174,6 +194,7 @@ export default function WorkoutApp() {
       setNow(time); toast("Resume or finish this paused session first."); return;
     }
     if (activity && !w.timer && !w.completedAt) w = resumeSession(w, time);
+    if (!w.completedAt) w = logEnteredSets(w);
     autoSavePaused.current = false;
     if (activity && w.timer?.runningSince) w = { ...w, timer: { ...w.timer, lastActivityAt: new Date(time).toISOString() } };
     activeId.current = w.id;
@@ -184,7 +205,7 @@ export default function WorkoutApp() {
   const history = workouts.filter(w => !!w.completedAt);
   const totalSets = history.reduce((n, w) => n + completedSets(w).length, 0);
   const trackedNames = [...new Set(history.flatMap(w => w.exercises.filter(e => e.sets.some(s => s.done)).map(e => e.name)))].sort();
-  const allNames = [...new Set([...exerciseNames, ...workouts.flatMap(w => w.exercises.map(e => e.name))])].sort();
+
   const selectedProgress = trackedNames.includes(progressName) ? progressName : trackedNames[0] ?? "";
   const points = progressPoints(history, selectedProgress);
   const thisWeek = history.filter(w => new Date(w.startedAt).getTime() >= now - 7 * 86400000);
@@ -192,26 +213,43 @@ export default function WorkoutApp() {
   function start(from?: Workout) {
     if (activeId.current || actionLock.current) { setTab("workout"); toast("Finish or discard your current session first."); return; }
     const w: Workout = { id: crypto.randomUUID(), name: from?.name || "Workout", startedAt: new Date().toISOString(), completedAt: null, revision: 0, timer: { elapsedMs: 0, runningSince: null, lastActivityAt: null },
-      exercises: from?.exercises.filter(e => e.sets.some(s => s.done)).map(e => ({ ...e, id: crypto.randomUUID(), sets: e.sets.filter(s => s.done).map(s => newSet(s)) })) ?? [] };
+      exercises: from?.exercises.filter(e => e.sets.some(s => s.done)).map(e => ({ ...e, id: crypto.randomUUID(), sets: e.sets.filter(s => s.done).map(() => newSet()) })) ?? [] };
     revisions.current[w.id] = 0; change(w); setTab("workout"); setDetail(null);
     if (!from) setPicker(true);
   }
   function addExercise(name: string) {
     if (!draft || !name.trim()) return;
-    const existing = allNames.find(n => n.toLowerCase() === name.trim().toLowerCase());
-    name = existing || name.trim();
-    if (draft.exercises.some(e => e.name.toLowerCase() === name.toLowerCase())) { toast("That exercise is already in this session."); return; }
+    if (actionLock.current || sessionClock(draft, Date.now()).needsReview) { toast("Resume your session before adding an exercise."); return; }
+    name = catalog.find(e => exerciseKey(e.name) === exerciseKey(name))?.name || name.trim();
+    if (draft.exercises.some(e => exerciseKey(e.name) === exerciseKey(name))) { toast("That exercise is already in this session."); return; }
     if (draft.exercises.length >= 30) { toast("A session supports up to 30 exercises."); return; }
     const prior = previousExercise(history.filter(w => w.id !== draft.id), name)?.sets.filter(s => s.done);
-    const e: Exercise = { id: crypto.randomUUID(), name, sets: prior?.length ? prior.map(s => newSet(s)) : [newSet(), newSet(), newSet()] };
-    change({ ...draft, exercises: [...draft.exercises, e] }); setPicker(false); setCustomName("");
+    const e: Exercise = { id: crypto.randomUUID(), name, sets: prior?.length ? prior.map(() => newSet()) : [newSet(), newSet(), newSet()] };
+    change({ ...draft, exercises: [...draft.exercises, e] }); setPicker(false); setCustomName(""); setConfirmDifferent(false);
+  }
+  async function createExercise() {
+    if (catalogLock.current || !catalogReady || !customName.trim()) return;
+    catalogLock.current = true; setCatalogBusy(true); setCatalogError("");
+    try {
+      const response = await fetch("/api/exercises", { method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(15000), body: JSON.stringify({ name: customName, confirmDifferent }) });
+      const result = await response.json() as { exercises: CatalogExercise[]; exercise: CatalogExercise; suggestions?: CatalogExercise[]; error?: string; reused?: boolean };
+      if (!response.ok) {
+        if (result.suggestions) { setCatalog(prev => [...prev.filter(e => !result.suggestions!.some((x: CatalogExercise) => x.id === e.id)), ...result.suggestions!]); setConfirmDifferent(false); }
+        throw new Error(result.error);
+      }
+      const exercise: CatalogExercise = result.exercise;
+      setCatalog(prev => [...prev.filter(e => e.id !== exercise.id), exercise].sort((a, b) => a.name.localeCompare(b.name)));
+      addExercise(exercise.name);
+      toast.success(result.reused ? "Used the existing exercise." : "Exercise added to your database.");
+    } catch (e) { setCatalogError(e instanceof Error ? e.message : "Could not save exercise."); }
+    finally { catalogLock.current = false; setCatalogBusy(false); }
   }
   function updateExercise(id: string, update: (e: Exercise) => Exercise) {
     if (draft) change({ ...draft, exercises: draft.exercises.map(e => e.id === id ? update(e) : e) });
   }
   function updateSet(e: Exercise, s: LiftSet, update: Partial<LiftSet>) {
     const next = { ...s, ...update };
-    if (next.done && (!next.weight.trim() || !Number.isFinite(Number(next.weight)) || Number(next.weight) < 0 || Number(next.weight) > 2000 || !/^\d+$/.test(next.reps) || Number(next.reps) < 1 || Number(next.reps) > 1000)) { toast.error("Enter a valid weight and reps first. Use 0 kg for bodyweight."); return; }
+    next.done = isLoggedSet(next);
     if (!draft) return;
     const w = draft.timer && !draft.timer.runningSince ? resumeSession(draft, Date.now()) : draft;
     change({ ...w, exercises: w.exercises.map(x => x.id === e.id ? { ...x, sets: x.sets.map(v => v.id === s.id ? next : v) } : x) });
@@ -219,7 +257,7 @@ export default function WorkoutApp() {
   async function finish() {
     if (!draft || !completedSets(draft).length || actionLock.current) return;
     actionLock.current = true; setBusy(true);
-    const finished = { ...stopSessionTimer(draft, Date.now()), completedAt: draft.completedAt || new Date().toISOString() };
+    const finished = { ...stopSessionTimer(logEnteredSets(draft), Date.now()), completedAt: draft.completedAt || new Date().toISOString() };
     change(finished, false);
     const saved = await flush();
     if (saved) { activeId.current = null; setDraft(null); setFinishOpen(false); setTab("history"); toast.success("Workout finished. Every set counts."); }
@@ -264,20 +302,20 @@ export default function WorkoutApp() {
               {!draft.timer?.runningSince && !clock?.needsReview && !draft.completedAt && draft.timer?.elapsedMs === 0 && <p className="muted">The timer starts when you first enter a weight or reps.</p>}
               <fieldset className="session-fields" disabled={busy || !!clock?.needsReview || !!draft.completedAt}>
               {!draft.exercises.length && <div className="panel empty compact"><Dumbbell size={34} /><h2>First exercise. Fresh start.</h2><p>Add a lift to start logging your sets.</p><button className="primary-button" onClick={() => setPicker(true)}><Plus size={17} /> Add exercise</button></div>}
-              {draft.exercises.map((e, index) => { const prior = previousExercise(history.filter(w => w.id !== draft.id), e.name)?.sets.filter(s => s.done); return <article className="exercise-card" key={e.id}><div className="exercise-header"><span className="exercise-index">{String(index + 1).padStart(2, "0")}</span><div><h2>{e.name}</h2><p>{prior ? "Last session shown below" : "No previous sets yet"}</p></div><button className="icon-button" aria-label={`Remove ${e.name}`} onClick={() => { if (e.sets.some(s => s.done)) { toast("Uncheck completed sets before removing this exercise."); return; } change({ ...draft, exercises: draft.exercises.filter(x => x.id !== e.id) }); }}><X size={17} /></button></div>
+              {draft.exercises.map((e, index) => { const prior = previousExercise(history.filter(w => w.id !== draft.id), e.name)?.sets.filter(s => s.done); return <article className="exercise-card" key={e.id}><div className="exercise-header"><span className="exercise-index">{String(index + 1).padStart(2, "0")}</span><div><h2>{e.name}</h2><p>{prior ? "Last session shown below" : "No previous sets yet"}</p></div><button className="icon-button" aria-label={`Remove ${e.name}`} onClick={() => { if (e.sets.some(s => s.weight || s.reps)) { setRemoveEntry({ exerciseId: e.id }); return; } change({ ...draft, exercises: draft.exercises.filter(x => x.id !== e.id) }); }}><X size={17} /></button></div>
                 <div className="set-grid set-labels" aria-hidden="true"><span>SET</span><span>PREVIOUS</span><span>KG</span><span>REPS</span><Check size={14} /><span /></div>
-                {e.sets.map((s, i) => <div className={`set-grid set-row ${s.done ? "set-done" : ""}`} key={s.id}><span className="set-number">{i + 1}</span><span className="previous-set">{prior?.[i] ? `${prior[i].weight} × ${prior[i].reps}` : "—"}</span><input aria-label={`${e.name} set ${i + 1} weight in kg`} inputMode="decimal" type="text" autoComplete="off" placeholder="0" value={s.weight} maxLength={10} disabled={s.done} onFocus={ev => ev.target.select()} onChange={ev => { if (/^\d*(\.\d*)?$/.test(ev.target.value) && (ev.target.value === "" || Number(ev.target.value) <= 2000)) updateSet(e, s, { weight: ev.target.value }); }} /><input aria-label={`${e.name} set ${i + 1} reps`} inputMode="numeric" type="text" autoComplete="off" placeholder="0" value={s.reps} maxLength={4} disabled={s.done} onFocus={ev => ev.target.select()} onChange={ev => { if (/^\d*$/.test(ev.target.value) && Number(ev.target.value) <= 1000) updateSet(e, s, { reps: ev.target.value }); }} /><Checkbox className="set-check" checked={s.done} onCheckedChange={value => updateSet(e, s, { done: value === true })} aria-label={`${s.done ? "Uncheck" : "Complete"} ${e.name} set ${i + 1}`} /><button className="remove-set" aria-label={`Remove ${e.name} set ${i + 1}`} disabled={s.done} onClick={() => updateExercise(e.id, x => ({ ...x, sets: x.sets.filter(v => v.id !== s.id) }))}><X size={13} /></button></div>)}
+                {e.sets.map((s, i) => <div className={`set-grid set-row ${isLoggedSet(s) ? "set-done" : ""}`} key={s.id}><span className="set-number">{i + 1}</span><span className="previous-set">{prior?.[i] ? `${prior[i].weight} × ${prior[i].reps}` : "—"}</span><input aria-label={`${e.name} set ${i + 1} weight in kg`} inputMode="decimal" type="text" autoComplete="off" placeholder="0" value={s.weight} maxLength={10} onFocus={ev => ev.target.select()} onChange={ev => { if (/^\d*(\.\d*)?$/.test(ev.target.value) && (ev.target.value === "" || Number(ev.target.value) <= 2000)) updateSet(e, s, { weight: ev.target.value }); }} /><input aria-label={`${e.name} set ${i + 1} reps`} inputMode="numeric" type="text" autoComplete="off" placeholder="0" value={s.reps} maxLength={4} onFocus={ev => ev.target.select()} onChange={ev => { if (/^\d*$/.test(ev.target.value) && Number(ev.target.value) <= 1000) updateSet(e, s, { reps: ev.target.value }); }} /><span className="set-status" role="img" aria-label={isLoggedSet(s) ? "Set logged automatically" : "Enter weight and reps"}>{isLoggedSet(s) ? <Check size={18} /> : "—"}</span><button className="remove-set" aria-label={`Remove ${e.name} set ${i + 1}`} onClick={() => { if (s.weight || s.reps) setRemoveEntry({ exerciseId: e.id, setId: s.id }); else updateExercise(e.id, x => ({ ...x, sets: x.sets.filter(v => v.id !== s.id) })); }}><X size={13} /></button></div>)}
                 <button className="add-set" disabled={e.sets.length >= 30} onClick={() => updateExercise(e.id, x => ({ ...x, sets: [...x.sets, newSet()] }))}><Plus size={15} /> Add set</button>
               </article>; })}
               {!!draft.exercises.length && <button className="add-exercise" onClick={() => setPicker(true)}><Plus size={19} />Add exercise</button>}
               </fieldset>
               <div className="session-bottom"><span className={`save-label ${saveStatus !== "saved" ? "pending-save" : ""}`} aria-live="polite">{saveStatus === "saving" ? <LoaderCircle size={15} className="spin" /> : <CloudCheck size={15} />}{saveStatus === "saved" ? "All changes saved" : saveStatus === "saving" ? "Saving changes…" : "Changes not saved yet"}</span><button className="text-button muted" disabled={busy} onClick={() => setDeleteTarget(draft)}>Discard session</button></div>
             </> : <>
-              <section className="start-panel"><div className="start-kicker"><span className="small-icon"><Dumbbell size={19} /></span> WORKOUT LOG</div><h2>{history.length ? "Ready for your next set?" : "Your first set starts here."}</h2><p>Log weight. Add reps. Tick it off.<br />Next time, your last lift is right beside you.</p><button className="primary-button start-button" onClick={() => start()}><Plus size={19} /> Start a workout <ArrowUpRight size={19} /></button><div className="start-footnote"><CloudCheck size={15} /> Your workouts save automatically.</div></section>
+              <section className="start-panel"><div className="start-kicker"><span className="small-icon"><Dumbbell size={19} /></span> WORKOUT LOG</div><h2>{history.length ? "Ready for your next set?" : "Your first set starts here."}</h2><p>Enter weight and reps. Your set is logged.<br />Next time, your last lift is right beside you.</p><button className="primary-button start-button" onClick={() => start()}><Plus size={19} /> Start a workout <ArrowUpRight size={19} /></button><div className="start-footnote"><CloudCheck size={15} /> Your workouts save automatically.</div></section>
               <div className="section-heading"><h2>Recent workouts</h2>{!!history.length && <button className="text-button" onClick={() => setTab("history")}>View all <ChevronRight size={15} /></button>}</div>
               {history.length ? history.slice(0, 3).map(w => <div className="recent-workout" key={w.id}><button className="recent-main" onClick={() => setDetail(w)}><span className="workout-icon"><Dumbbell size={20} /></span><span><strong>{w.name}</strong><span>{date(w.startedAt)} · {completedSets(w).length} sets · {number(volume(w))} kg</span></span></button><button className="repeat-button" onClick={() => start(w)}><RotateCcw size={16} /> Repeat</button></div>) : <div className="panel history-empty"><History size={23} /><p>No workouts yet.<span>Your completed sessions will appear here.</span></p></div>}
             </>}
-          </section><aside className="training-aside"><section className="summary-panel"><p className="eyebrow">{draft ? "THIS SESSION" : "LAST 7 DAYS"}</p><div className="big-stat"><strong>{draft ? currentSets : thisWeek.length}</strong><span>{draft ? `of ${plannedSets} sets complete` : "workouts completed"}</span></div><div className="summary-line"><span>{draft ? "Exercises" : "Sets logged"}</span><strong>{draft ? draft.exercises.filter(e => e.sets.some(s => s.done)).length : thisWeek.reduce((n, w) => n + completedSets(w).length, 0)}</strong></div><div className="summary-line"><span>Volume</span><strong>{number(draft ? volume(draft) : thisWeek.reduce((n, w) => n + volume(w), 0))}<small> kg</small></strong></div><p className="metric-note">Volume = weight × reps, completed sets only.</p></section><section className="aside-note"><span className="small-icon"><TrendingUp size={18} /></span><h3>A little more, over time.</h3><p>Your previous weights and reps appear as you log. Progress starts with a consistent record.</p><p className="weight-note">Use the same weight convention each time. For dumbbells, we recommend weight per dumbbell. Use 0 kg for bodyweight-only sets.</p></section></aside></div>
+          </section><aside className="training-aside"><section className="summary-panel"><p className="eyebrow">{draft ? "THIS SESSION" : "LAST 7 DAYS"}</p><div className="big-stat"><strong>{draft ? currentSets : thisWeek.length}</strong><span>{draft ? `of ${plannedSets} sets logged` : "workouts completed"}</span></div><div className="summary-line"><span>{draft ? "Exercises" : "Sets logged"}</span><strong>{draft ? draft.exercises.filter(e => e.sets.some(isLoggedSet)).length : thisWeek.reduce((n, w) => n + completedSets(w).length, 0)}</strong></div><div className="summary-line"><span>Volume</span><strong>{number(draft ? volume(draft) : thisWeek.reduce((n, w) => n + volume(w), 0))}<small> kg</small></strong></div><p className="metric-note">Volume = weight × reps, logged sets only.</p></section><section className="aside-note"><span className="small-icon"><TrendingUp size={18} /></span><h3>A little more, over time.</h3><p>Your previous weights and reps appear as you log. Progress starts with a consistent record.</p><p className="weight-note">Use the same weight convention each time. For dumbbells, we recommend weight per dumbbell. Use 0 kg for bodyweight-only sets.</p></section></aside></div>
         </TabsContent>
         <TabsContent value="history"><div className="section-title"><div><p className="eyebrow">THE WORK YOU PUT IN</p><h2>Workout history</h2></div><span className="count-label">{history.length} sessions</span></div>{!history.length ? <div className="panel empty"><History size={34} /><h2>A clean slate.</h2><p>Finish a workout to add it to your history.</p><button className="primary-button" onClick={() => draft ? setTab("workout") : start()}>{draft ? "Resume workout" : "Start a workout"}</button></div> : <div className="history-grid">{history.map(w => <article className="history-card" key={w.id}><div className="history-card-top"><span>{date(w.startedAt)}</span><Dumbbell size={20} /></div><button className="history-title" onClick={() => setDetail(w)}>{w.name}<ChevronRight size={18} /></button><p className="history-exercises">{w.exercises.filter(e => e.sets.some(s => s.done)).map(e => e.name).join(" · ")}</p><div className="history-metrics"><span><strong>{completedSets(w).length}</strong> sets</span><span><strong>{number(volume(w))}</strong> kg volume</span></div><div className="history-actions"><button className="text-button" onClick={() => setDetail(w)}>View session</button><button className="repeat-button" onClick={() => start(w)}><RotateCcw size={15} />Repeat</button></div></article>)}</div>}</TabsContent>
         <TabsContent value="progress"><div className="section-title"><div><p className="eyebrow">BUILDING YOUR BASELINE</p><h2>Your progress</h2></div><span className="count-label">{totalSets} sets on record</span></div>{!trackedNames.length ? <div className="panel empty"><TrendingUp size={36} /><h2>Your baseline comes first.</h2><p>Complete your first workout to see your lifting history here.</p><button className="primary-button" onClick={() => draft ? setTab("workout") : start()}>{draft ? "Resume workout" : "Start a workout"}</button></div> : <div className="progress-panel"><div className="progress-heading"><div><p className="eyebrow">EXERCISE</p><Select value={selectedProgress} onValueChange={setProgressName}><SelectTrigger className="exercise-select" aria-label="Exercise progress"><SelectValue /></SelectTrigger><SelectContent>{trackedNames.map(n => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent></Select></div><span className="chart-legend"><i /> Heaviest completed set</span></div><div className="progress-stats"><div><span>Best weight</span><strong>{number(Math.max(...points.map(p => p.weight)))} <small>kg</small></strong></div><div><span>Latest set at top weight</span><strong>{points.at(-1)?.weight} <small>kg ×</small> {points.at(-1)?.reps}</strong></div><div><span>Sessions logged</span><strong>{points.length}</strong></div></div><ProgressChart points={points} /><p className="metric-note">Heaviest weight per completed session. Compare reps too: a heavier set with fewer reps is not automatically an improvement.</p><div className="progress-table"><div className="progress-table-row progress-table-head"><span>SESSION</span><span>TOP SET</span><span>SETS</span></div>{[...points].reverse().map(p => <div className="progress-table-row" key={p.id}><span>{date(p.date)}</span><strong>{p.weight} kg × {p.reps}</strong><span>{p.sets}</span></div>)}</div></div>}</TabsContent>
@@ -285,21 +323,29 @@ export default function WorkoutApp() {
       </Tabs>
       <footer className="app-footer"><span>STACKD <span className="version">/ 01</span></span><span>One set at a time.</span></footer>
     </main>
-    <Dialog open={picker} onOpenChange={setPicker}>
+    <Dialog open={picker} onOpenChange={v => { if (!catalogBusy) setPicker(v); }}>
       <DialogContent ref={exerciseDialog} className="stackd-dialog exercise-dialog" onOpenAutoFocus={event => { event.preventDefault(); exerciseDialog.current?.focus(); }}>
-        <DialogHeader><DialogTitle>Add an exercise</DialogTitle><DialogDescription>Tap a lift to add it, or create your own below.</DialogDescription></DialogHeader>
-        <Command className="exercise-search" label="Add an exercise">
-          <CommandInput placeholder="Search exercises…" aria-label="Search exercises" />
+        <DialogHeader><DialogTitle>Add an exercise</DialogTitle><DialogDescription>Search your exercise database. Tap a result to add it.</DialogDescription></DialogHeader>
+        {catalogError && <p role="alert" className="catalog-message">{catalogError} {!catalogReady && <button className="text-button" onClick={() => void loadCatalog()}>Retry</button>}</p>}
+        <Command className="exercise-search" label="Add an exercise" shouldFilter={false}>
+          <CommandInput placeholder="Search or name a new exercise…" aria-label="Search exercises" value={customName} maxLength={80} disabled={catalogBusy || !catalogReady} onValueChange={v => { setCustomName(v); setConfirmDifferent(false); setCatalogError(""); }} />
           <CommandList>
-            <CommandEmpty>No matching exercise. Create your own below.</CommandEmpty>
-            {allNames.map(name => <CommandItem className="exercise-picker-option" key={name} value={name} onSelect={() => addExercise(name)}><span>{name}</span><Plus size={18} aria-hidden="true" /></CommandItem>)}
+            <CommandEmpty>{catalogReady ? "No matching exercise found." : "Loading exercise database…"}</CommandEmpty>
+            {matches.slice(0, 60).map(({ exercise }) => <CommandItem disabled={catalogBusy} className="exercise-picker-option" key={exercise.id} value={exercise.id} onSelect={() => addExercise(exercise.name)}><span>{exercise.name}</span><Plus size={18} aria-hidden="true" /></CommandItem>)}
           </CommandList>
         </Command>
-        <div className="custom-exercise"><label htmlFor="custom-exercise">Or create a custom exercise</label><div><input id="custom-exercise" placeholder="e.g. Incline curl (cable)" value={customName} maxLength={80} onChange={e => setCustomName(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addExercise(customName); }} /><button className="secondary-button" disabled={!customName.trim()} onClick={() => addExercise(customName)}>Add</button></div></div>
+        {customName.trim() && catalogReady && <div className="catalog-create">
+          {exactMatch ? <p>This exercise already exists. Select it above.</p> : <>
+            {!!similarMatches.length && <><p>Similar names already exist. Select one above if it is the same movement and equipment.</p><label className="catalog-confirm"><input type="checkbox" checked={confirmDifferent} disabled={catalogBusy} onChange={e => setConfirmDifferent(e.target.checked)} /> This is a different exercise, not a spelling variation.</label></>}
+            {!similarMatches.length && <p>Not listed? Include the movement and equipment in its name.</p>}
+            <button className="primary-button" disabled={catalogBusy || customName.trim().length < 3 || (!!similarMatches.length && !confirmDifferent)} onClick={() => void createExercise()}>{catalogBusy ? "Saving…" : `Create “${customName.trim()}” & add`}</button>
+          </>}
+        </div>}
       </DialogContent>
     </Dialog>
-    <Dialog open={finishOpen} onOpenChange={v => { if (!busy) setFinishOpen(v); }}><DialogContent className="stackd-dialog"><DialogHeader><DialogTitle>Finish this workout?</DialogTitle><DialogDescription>{currentSets} completed sets · {draft ? number(volume(draft)) : 0} kg volume. Only checked sets count towards your progress.</DialogDescription></DialogHeader>{plannedSets > currentSets && <p className="muted">{plannedSets - currentSets} unchecked sets will not count as completed.</p>}<button className="primary-button" disabled={busy} onClick={() => void finish()}>{busy ? "Saving workout…" : "Finish & save"}<Check size={18} /></button></DialogContent></Dialog>
+    <Dialog open={finishOpen} onOpenChange={v => { if (!busy) setFinishOpen(v); }}><DialogContent className="stackd-dialog"><DialogHeader><DialogTitle>Finish this workout?</DialogTitle><DialogDescription>{currentSets} completed sets · {draft ? number(volume(draft)) : 0} kg volume. Sets with valid weight and reps count automatically.</DialogDescription></DialogHeader>{plannedSets > currentSets && <p className="muted">{plannedSets - currentSets} empty or incomplete rows will not count.</p>}<button className="primary-button" disabled={busy} onClick={() => void finish()}>{busy ? "Saving workout…" : "Finish & save"}<Check size={18} /></button></DialogContent></Dialog>
     <Dialog open={!!detail} onOpenChange={v => { if (!v) setDetail(null); }}><DialogContent className="stackd-dialog detail-dialog"><DialogHeader><DialogTitle>{detail?.name}</DialogTitle><DialogDescription>{detail && date(detail.startedAt)} · {detail && completedSets(detail).length} sets · {detail && number(volume(detail))} kg volume</DialogDescription></DialogHeader><div className="detail-list">{detail?.exercises.filter(e => e.sets.some(s => s.done)).map(e => <div key={e.id}><h3>{e.name}</h3>{e.sets.filter(s => s.done).map((s, i) => <p key={s.id}><span>Set {i + 1}</span><strong>{s.weight} kg × {s.reps}</strong><Check size={15} /></p>)}</div>)}</div><button className="primary-button" onClick={() => detail && start(detail)}><RotateCcw size={17} /> Repeat workout</button><button className="text-button danger" onClick={() => { setDeleteTarget(detail); setDetail(null); }}><Trash2 size={15} />Delete workout</button></DialogContent></Dialog>
+    <AlertDialog open={!!removeEntry} onOpenChange={v => { if (!v) setRemoveEntry(null); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Remove {removeEntry?.setId ? "this set" : "this exercise"}?</AlertDialogTitle><AlertDialogDescription>This removes its entered weights and reps from this session.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep it</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => { if (draft && removeEntry) { const target = removeEntry; if (target.setId) updateExercise(target.exerciseId, e => ({ ...e, sets: e.sets.filter(s => s.id !== target.setId) })); else change({ ...draft, exercises: draft.exercises.filter(e => e.id !== target.exerciseId) }); } setRemoveEntry(null); }}>Remove</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     <AlertDialog open={!!deleteTarget} onOpenChange={v => { if (!v && !busy) setDeleteTarget(null); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete this workout?</AlertDialogTitle><AlertDialogDescription>This permanently removes “{deleteTarget?.name}” and its sets from your log and progress. Export your log first if you want a copy.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={busy}>Keep workout</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy} onClick={e => { e.preventDefault(); void removeWorkout(); }}>{busy ? "Deleting…" : "Delete workout"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>;
 }

@@ -146,3 +146,11 @@ h1 span { color:var(--primary); }
 .exercise-search [data-slot=command-input-wrapper] { min-height: 48px; }
 .exercise-search [data-slot=command-list] { max-height: min(260px, 30dvh); overscroll-behavior: contain; }
 .exercise-picker-option { min-height: 48px; padding: 12px; font-size: 16px; touch-action: manipulation; justify-content: space-between; }
+
+.set-status { display:flex; align-items:center; justify-content:center; color:var(--muted-foreground); }
+.set-done .set-status { color:#c7f11f; }
+.catalog-create { display:grid; gap:14px; color:#adb7a1; font-size:14px; }
+.catalog-create .primary-button { white-space:normal; overflow-wrap:anywhere; }
+.catalog-confirm { display:flex; align-items:flex-start; gap:10px; cursor:pointer; }
+.catalog-confirm input { margin-top:4px; accent-color:#c7f11f; }
+.catalog-message { color:#f6bd89; font-size:14px; }
