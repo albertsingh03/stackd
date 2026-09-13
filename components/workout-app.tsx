@@ -5,8 +5,7 @@ import { ArrowUpRight, Check, ChevronRight, Clock3, CloudCheck, Download, Dumbbe
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
-import { Combobox, ComboboxInput, ComboboxList, ComboboxItem, ComboboxEmpty } from "@/components/ui/combobox";
-import { Combobox as ComboboxPrimitive } from "@base-ui/react";
+import { Command, CommandInput, CommandList, CommandItem, CommandEmpty } from "@/components/ui/command";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster } from "@/components/ui/sonner";
@@ -287,21 +286,15 @@ export default function WorkoutApp() {
       <footer className="app-footer"><span>STACKD <span className="version">/ 01</span></span><span>One set at a time.</span></footer>
     </main>
     <Dialog open={picker} onOpenChange={setPicker}>
-      <DialogContent ref={exerciseDialog} className="stackd-dialog">
+      <DialogContent ref={exerciseDialog} className="stackd-dialog exercise-dialog" onOpenAutoFocus={event => { event.preventDefault(); exerciseDialog.current?.focus(); }}>
         <DialogHeader><DialogTitle>Add an exercise</DialogTitle><DialogDescription>Tap a lift to add it, or create your own below.</DialogDescription></DialogHeader>
-        <Combobox items={allNames} value={null} onValueChange={name => { if (name) addExercise(name); }}>
-          <ComboboxInput placeholder="Search exercises…" aria-label="Search exercises" />
-          {/* Keep the popup inside Radix's modal focus/pointer boundary. A body
-              portal from a different UI library is treated as outside the dialog. */}
-          <ComboboxPrimitive.Portal container={exerciseDialog}>
-            <ComboboxPrimitive.Positioner sideOffset={6} align="start" className="exercise-picker-positioner">
-              <ComboboxPrimitive.Popup data-slot="combobox-content" className="group/combobox-content exercise-picker-popup">
-                <ComboboxEmpty>No matching exercise.</ComboboxEmpty>
-                <ComboboxList>{(name: string) => <ComboboxItem className="exercise-picker-option" key={name} value={name}>{name}</ComboboxItem>}</ComboboxList>
-              </ComboboxPrimitive.Popup>
-            </ComboboxPrimitive.Positioner>
-          </ComboboxPrimitive.Portal>
-        </Combobox>
+        <Command className="exercise-search" label="Add an exercise">
+          <CommandInput placeholder="Search exercises…" aria-label="Search exercises" />
+          <CommandList>
+            <CommandEmpty>No matching exercise. Create your own below.</CommandEmpty>
+            {allNames.map(name => <CommandItem className="exercise-picker-option" key={name} value={name} onSelect={() => addExercise(name)}><span>{name}</span><Plus size={18} aria-hidden="true" /></CommandItem>)}
+          </CommandList>
+        </Command>
         <div className="custom-exercise"><label htmlFor="custom-exercise">Or create a custom exercise</label><div><input id="custom-exercise" placeholder="e.g. Incline curl (cable)" value={customName} maxLength={80} onChange={e => setCustomName(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addExercise(customName); }} /><button className="secondary-button" disabled={!customName.trim()} onClick={() => addExercise(customName)}>Add</button></div></div>
       </DialogContent>
     </Dialog>

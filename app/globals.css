@@ -141,6 +141,8 @@ h1 span { color:var(--primary); }
 .session-review { padding: 24px; margin-bottom: 24px; border-color: var(--primary, #c7f11f); }
 .session-review h2 { font-size: 20px; margin-bottom: 10px; }
 .session-review p { margin-bottom: 16px; }
-.exercise-picker-positioner { z-index: 60; }
-.exercise-picker-popup { width: var(--anchor-width); max-width: var(--available-width); background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 12px 32px #0006; }
-.exercise-picker-option { min-height: 48px; padding: 12px 36px 12px 12px; font-size: 16px; touch-action: manipulation; }
+.exercise-dialog { max-height: 85dvh; overflow-y: auto; }
+.exercise-search { border: 1px solid var(--border); height: auto; }
+.exercise-search [data-slot=command-input-wrapper] { min-height: 48px; }
+.exercise-search [data-slot=command-list] { max-height: min(260px, 30dvh); overscroll-behavior: contain; }
+.exercise-picker-option { min-height: 48px; padding: 12px; font-size: 16px; touch-action: manipulation; justify-content: space-between; }

@@ -13,7 +13,7 @@ The first version simplifies an existing Figma/Android concept into three views:
 - Start a workout or repeat a completed session.
 - Choose from a concise exercise list or add a custom exercise.
 - Log kg and reps, add/remove sets, and check off completed sets.
-- Additional sets start with blank kg/reps; tapping a search result adds the exercise directly. The search popup stays inside the dialog's focus and pointer boundary.
+- Additional sets start with blank kg/reps; tapping a search result adds the exercise directly. Exercise search uses an inline command list inside the dialog, without a nested popup or portal. Opening the picker leaves the keyboard closed until search is tapped.
 - Prefill previous weights/reps without marking them completed.
 - Autosave to a server-backed database; resume an unfinished session.
 - Start timing on the first set entry; review sessions after 90 minutes without logging or six hours of continuous timing.
