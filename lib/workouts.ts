@@ -20,6 +20,7 @@ export const workoutSchema = z.object({
 export type Workout = z.infer<typeof workoutSchema>;
 export type Exercise = Workout["exercises"][number];
 export type LiftSet = Exercise["sets"][number];
+export const newWorkoutSet = (from?: LiftSet): LiftSet => ({ id: crypto.randomUUID(), weight: from?.weight ?? "", reps: from?.reps ?? "", done: false });
 export const exerciseNames = ["Bench press (barbell)", "Incline bench press (dumbbell)", "Chest press (machine)", "Cable fly", "Push-up", "Lat pulldown", "Seated cable row", "Bent-over row (barbell)", "One-arm row (dumbbell)", "Pull-up", "Shoulder press (dumbbell)", "Shoulder press (machine)", "Lateral raise (dumbbell)", "Lateral raise (cable)", "Reverse fly", "Face pull", "Biceps curl (dumbbell)", "Incline curl (dumbbell)", "Hammer curl", "Preacher curl", "Triceps pushdown", "Overhead triceps extension", "Squat (barbell)", "Leg press", "Romanian deadlift", "Deadlift (barbell)", "Leg extension", "Seated leg curl", "Lying leg curl", "Bulgarian split squat", "Hip thrust", "Standing calf raise", "Seated calf raise", "Cable crunch"];
 export const completedSets = (w: Workout) => w.exercises.flatMap(e => e.sets.filter(s => s.done));
 export const volume = (w: Workout) => completedSets(w).reduce((n, s) => n + Number(s.weight) * Number(s.reps), 0);

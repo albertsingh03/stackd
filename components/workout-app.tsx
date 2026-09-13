@@ -5,18 +5,18 @@ import { ArrowUpRight, Check, ChevronRight, Clock3, CloudCheck, Download, Dumbbe
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
-import { Combobox, ComboboxInput, ComboboxContent, ComboboxList, ComboboxItem, ComboboxEmpty } from "@/components/ui/combobox";
+import { Combobox, ComboboxInput, ComboboxList, ComboboxItem, ComboboxEmpty } from "@/components/ui/combobox";
+import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
-import { completedSets, exerciseNames, previousExercise, progressPoints, volume, workoutSchema, sessionClock, resumeSession, stopSessionTimer, workoutPayload as transport, sameWorkoutPayload as samePayload, type Exercise, type LiftSet, type Workout } from "@/lib/workouts";
+import { completedSets, exerciseNames, previousExercise, progressPoints, volume, workoutSchema, sessionClock, resumeSession, stopSessionTimer, workoutPayload as transport, sameWorkoutPayload as samePayload, newWorkoutSet as newSet, type Exercise, type LiftSet, type Workout } from "@/lib/workouts";
 
 import { loadWorkoutPages, MAX_SAVE_BATCH } from "@/lib/workout-requests";
 
 const number = (n: number) => n.toLocaleString("en-AU", { maximumFractionDigits: 1 });
 const date = (s: string) => new Date(s).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
-const newSet = (from?: LiftSet): LiftSet => ({ id: crypto.randomUUID(), weight: from?.weight ?? "", reps: from?.reps ?? "", done: false });
 const DRAFT_KEY = "stackd.unsaved-workout.v1";
 
 
@@ -29,7 +29,7 @@ export default function WorkoutApp() {
   const [saveStatus, setSaveStatus] = useState("saved");
   const [tab, setTab] = useState("workout");
   const [picker, setPicker] = useState(false);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const exerciseDialog = useRef<HTMLDivElement | null>(null);
   const [customName, setCustomName] = useState("");
   const [detail, setDetail] = useState<Workout | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Workout | null>(null);
@@ -205,7 +205,7 @@ export default function WorkoutApp() {
     if (draft.exercises.length >= 30) { toast("A session supports up to 30 exercises."); return; }
     const prior = previousExercise(history.filter(w => w.id !== draft.id), name)?.sets.filter(s => s.done);
     const e: Exercise = { id: crypto.randomUUID(), name, sets: prior?.length ? prior.map(s => newSet(s)) : [newSet(), newSet(), newSet()] };
-    change({ ...draft, exercises: [...draft.exercises, e] }); setPicker(false); setSelectedName(null); setCustomName("");
+    change({ ...draft, exercises: [...draft.exercises, e] }); setPicker(false); setCustomName("");
   }
   function updateExercise(id: string, update: (e: Exercise) => Exercise) {
     if (draft) change({ ...draft, exercises: draft.exercises.map(e => e.id === id ? update(e) : e) });
@@ -268,7 +268,7 @@ export default function WorkoutApp() {
               {draft.exercises.map((e, index) => { const prior = previousExercise(history.filter(w => w.id !== draft.id), e.name)?.sets.filter(s => s.done); return <article className="exercise-card" key={e.id}><div className="exercise-header"><span className="exercise-index">{String(index + 1).padStart(2, "0")}</span><div><h2>{e.name}</h2><p>{prior ? "Last session shown below" : "No previous sets yet"}</p></div><button className="icon-button" aria-label={`Remove ${e.name}`} onClick={() => { if (e.sets.some(s => s.done)) { toast("Uncheck completed sets before removing this exercise."); return; } change({ ...draft, exercises: draft.exercises.filter(x => x.id !== e.id) }); }}><X size={17} /></button></div>
                 <div className="set-grid set-labels" aria-hidden="true"><span>SET</span><span>PREVIOUS</span><span>KG</span><span>REPS</span><Check size={14} /><span /></div>
                 {e.sets.map((s, i) => <div className={`set-grid set-row ${s.done ? "set-done" : ""}`} key={s.id}><span className="set-number">{i + 1}</span><span className="previous-set">{prior?.[i] ? `${prior[i].weight} × ${prior[i].reps}` : "—"}</span><input aria-label={`${e.name} set ${i + 1} weight in kg`} inputMode="decimal" type="text" autoComplete="off" placeholder="0" value={s.weight} maxLength={10} disabled={s.done} onFocus={ev => ev.target.select()} onChange={ev => { if (/^\d*(\.\d*)?$/.test(ev.target.value) && (ev.target.value === "" || Number(ev.target.value) <= 2000)) updateSet(e, s, { weight: ev.target.value }); }} /><input aria-label={`${e.name} set ${i + 1} reps`} inputMode="numeric" type="text" autoComplete="off" placeholder="0" value={s.reps} maxLength={4} disabled={s.done} onFocus={ev => ev.target.select()} onChange={ev => { if (/^\d*$/.test(ev.target.value) && Number(ev.target.value) <= 1000) updateSet(e, s, { reps: ev.target.value }); }} /><Checkbox className="set-check" checked={s.done} onCheckedChange={value => updateSet(e, s, { done: value === true })} aria-label={`${s.done ? "Uncheck" : "Complete"} ${e.name} set ${i + 1}`} /><button className="remove-set" aria-label={`Remove ${e.name} set ${i + 1}`} disabled={s.done} onClick={() => updateExercise(e.id, x => ({ ...x, sets: x.sets.filter(v => v.id !== s.id) }))}><X size={13} /></button></div>)}
-                <button className="add-set" disabled={e.sets.length >= 30} onClick={() => updateExercise(e.id, x => ({ ...x, sets: [...x.sets, newSet(x.sets.at(-1))] }))}><Plus size={15} /> Add set</button>
+                <button className="add-set" disabled={e.sets.length >= 30} onClick={() => updateExercise(e.id, x => ({ ...x, sets: [...x.sets, newSet()] }))}><Plus size={15} /> Add set</button>
               </article>; })}
               {!!draft.exercises.length && <button className="add-exercise" onClick={() => setPicker(true)}><Plus size={19} />Add exercise</button>}
               </fieldset>
@@ -286,7 +286,25 @@ export default function WorkoutApp() {
       </Tabs>
       <footer className="app-footer"><span>STACKD <span className="version">/ 01</span></span><span>One set at a time.</span></footer>
     </main>
-    <Dialog open={picker} onOpenChange={setPicker}><DialogContent className="stackd-dialog"><DialogHeader><DialogTitle>Add an exercise</DialogTitle><DialogDescription>Choose a lift, or add your own below.</DialogDescription></DialogHeader><Combobox items={allNames} value={selectedName} onValueChange={setSelectedName}><ComboboxInput placeholder="Search exercises…" aria-label="Search exercises" /><ComboboxContent><ComboboxEmpty>No matching exercise.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><button className="primary-button" disabled={!selectedName} onClick={() => selectedName && addExercise(selectedName)}>Add selected exercise <Plus size={16} /></button><div className="custom-exercise"><label htmlFor="custom-exercise">Or create a custom exercise</label><div><input id="custom-exercise" placeholder="e.g. Incline curl (cable)" value={customName} maxLength={80} onChange={e => setCustomName(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addExercise(customName); }} /><button className="secondary-button" disabled={!customName.trim()} onClick={() => addExercise(customName)}>Add</button></div></div></DialogContent></Dialog>
+    <Dialog open={picker} onOpenChange={setPicker}>
+      <DialogContent ref={exerciseDialog} className="stackd-dialog">
+        <DialogHeader><DialogTitle>Add an exercise</DialogTitle><DialogDescription>Tap a lift to add it, or create your own below.</DialogDescription></DialogHeader>
+        <Combobox items={allNames} value={null} onValueChange={name => { if (name) addExercise(name); }}>
+          <ComboboxInput placeholder="Search exercises…" aria-label="Search exercises" />
+          {/* Keep the popup inside Radix's modal focus/pointer boundary. A body
+              portal from a different UI library is treated as outside the dialog. */}
+          <ComboboxPrimitive.Portal container={exerciseDialog}>
+            <ComboboxPrimitive.Positioner sideOffset={6} align="start" className="exercise-picker-positioner">
+              <ComboboxPrimitive.Popup data-slot="combobox-content" className="group/combobox-content exercise-picker-popup">
+                <ComboboxEmpty>No matching exercise.</ComboboxEmpty>
+                <ComboboxList>{(name: string) => <ComboboxItem className="exercise-picker-option" key={name} value={name}>{name}</ComboboxItem>}</ComboboxList>
+              </ComboboxPrimitive.Popup>
+            </ComboboxPrimitive.Positioner>
+          </ComboboxPrimitive.Portal>
+        </Combobox>
+        <div className="custom-exercise"><label htmlFor="custom-exercise">Or create a custom exercise</label><div><input id="custom-exercise" placeholder="e.g. Incline curl (cable)" value={customName} maxLength={80} onChange={e => setCustomName(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addExercise(customName); }} /><button className="secondary-button" disabled={!customName.trim()} onClick={() => addExercise(customName)}>Add</button></div></div>
+      </DialogContent>
+    </Dialog>
     <Dialog open={finishOpen} onOpenChange={v => { if (!busy) setFinishOpen(v); }}><DialogContent className="stackd-dialog"><DialogHeader><DialogTitle>Finish this workout?</DialogTitle><DialogDescription>{currentSets} completed sets · {draft ? number(volume(draft)) : 0} kg volume. Only checked sets count towards your progress.</DialogDescription></DialogHeader>{plannedSets > currentSets && <p className="muted">{plannedSets - currentSets} unchecked sets will not count as completed.</p>}<button className="primary-button" disabled={busy} onClick={() => void finish()}>{busy ? "Saving workout…" : "Finish & save"}<Check size={18} /></button></DialogContent></Dialog>
     <Dialog open={!!detail} onOpenChange={v => { if (!v) setDetail(null); }}><DialogContent className="stackd-dialog detail-dialog"><DialogHeader><DialogTitle>{detail?.name}</DialogTitle><DialogDescription>{detail && date(detail.startedAt)} · {detail && completedSets(detail).length} sets · {detail && number(volume(detail))} kg volume</DialogDescription></DialogHeader><div className="detail-list">{detail?.exercises.filter(e => e.sets.some(s => s.done)).map(e => <div key={e.id}><h3>{e.name}</h3>{e.sets.filter(s => s.done).map((s, i) => <p key={s.id}><span>Set {i + 1}</span><strong>{s.weight} kg × {s.reps}</strong><Check size={15} /></p>)}</div>)}</div><button className="primary-button" onClick={() => detail && start(detail)}><RotateCcw size={17} /> Repeat workout</button><button className="text-button danger" onClick={() => { setDeleteTarget(detail); setDetail(null); }}><Trash2 size={15} />Delete workout</button></DialogContent></Dialog>
     <AlertDialog open={!!deleteTarget} onOpenChange={v => { if (!v && !busy) setDeleteTarget(null); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete this workout?</AlertDialogTitle><AlertDialogDescription>This permanently removes “{deleteTarget?.name}” and its sets from your log and progress. Export your log first if you want a copy.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={busy}>Keep workout</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy} onClick={e => { e.preventDefault(); void removeWorkout(); }}>{busy ? "Deleting…" : "Delete workout"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
